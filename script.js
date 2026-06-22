@@ -1,9 +1,9 @@
-const video         = document.getElementById('webcam');
-const canvas        = document.getElementById('canvas');
-const placeholder   = document.getElementById('camera-placeholder');
-const scanLine      = document.getElementById('scan-line');
-const statusDot     = document.getElementById('status-dot');
-const statusText    = document.getElementById('status-text');
+const video          = document.getElementById('webcam');
+const canvas         = document.getElementById('canvas');
+const placeholder    = document.getElementById('camera-placeholder');
+const scanLine       = document.getElementById('scan-line');
+const statusDot      = document.getElementById('status-dot');
+const statusText     = document.getElementById('status-text');
 
 const btnStart   = document.getElementById('btn-start');
 const btnStop    = document.getElementById('btn-stop');
@@ -80,8 +80,9 @@ btnCapture.addEventListener('click', async () => {
     const fotoBase64 = canvas.toDataURL('image/jpeg', 0.8);
 
     try {
-        // Esta es la URL que acabamos de validar que funciona
-        const respuesta = await fetch('https://proyecto-reciclaje-as3u.vercel.app/api/classify', {
+        // RUTA RELATIVA: Esto asegura que el frontend hable con el backend 
+        // desplegado en el mismo dominio.
+        const respuesta = await fetch('/api/classify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ image: fotoBase64 })
@@ -91,15 +92,15 @@ btnCapture.addEventListener('click', async () => {
 
         if (resultado.error) throw new Error(resultado.error);
 
-        outputClass.textContent        = resultado.clase;
-        outputConfidence.textContent   = resultado.confianza;
-        statusText.textContent         = 'Análisis completo';
+        outputClass.textContent      = resultado.clase;
+        outputConfidence.textContent = (resultado.confianza * 100).toFixed(2) + '%';
+        statusText.textContent       = 'Análisis completo';
 
     } catch (error) {
         console.error('Error en la clasificación:', error);
-        outputClass.textContent        = 'Error de lectura';
-        outputConfidence.textContent   = '0.0%';
-        statusText.textContent         = 'Error de conexión';
+        outputClass.textContent      = 'Error de lectura';
+        outputConfidence.textContent = '0.0%';
+        statusText.textContent       = 'Error de conexión';
         alert('Ocurrió un problema: ' + error.message);
     } finally {
         loading.style.display = 'none';

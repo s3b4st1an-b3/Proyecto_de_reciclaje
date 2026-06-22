@@ -8,6 +8,7 @@ import serverless_wsgi
 
 app = Flask(__name__)
 
+# Carga del modelo
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ruta_modelo = os.path.join(BASE_DIR, "modelo_reciclaje.onnx")
 sesion_ia = None
@@ -17,7 +18,6 @@ def cargar_modelo():
     if sesion_ia is None:
         try:
             sesion_ia = ort.InferenceSession(ruta_modelo)
-            print("Modelo cargado correctamente")
         except Exception as e:
             print(f"Error cargando modelo: {e}")
 
@@ -30,9 +30,12 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return response
 
-@app.route('/api/classify', methods=['POST', 'OPTIONS'])
+@app.route('/api/classify', methods=['GET', 'POST', 'OPTIONS'])
 def classify():
-
+    # Soporte para GET (para verificar que la API vive)
+    if request.method == 'GET':
+        return jsonify({"status": "API activa y lista para recibir POST"}), 200
+        
     if request.method == 'OPTIONS':
         return jsonify({}), 200
 
@@ -41,11 +44,10 @@ def classify():
 
     try:
         data = request.json
-        image_b64 = data.get('image')
-
-        if not image_b64:
+        if not data or 'image' not in data:
             return jsonify({"error": "No se recibió imagen"}), 400
 
+        image_b64 = data['image']
         if "," in image_b64:
             image_b64 = image_b64.split(",")[1]
 
@@ -60,19 +62,16 @@ def classify():
 
         nombre_entrada = sesion_ia.get_inputs()[0].name
         predicciones = sesion_ia.run(None, {nombre_entrada: tensor_entrada})[0]
-
         clase_id = int(np.argmax(predicciones))
-
         clases = ["Papel/Cartón", "Vidrio", "Plástico", "Orgánico"]
 
         return jsonify({
             "clase": clases[clase_id % 4],
             "confianza": float(np.max(predicciones))
         })
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
+# Handler para Vercel Serverless
 def handler(event, context):
     return serverless_wsgi.handle_request(app, event, context)

@@ -8,10 +8,8 @@ import serverless_wsgi
 
 app = Flask(__name__)
 
-# 📌 Ruta correcta para Vercel
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ruta_modelo = os.path.join(BASE_DIR, "..", "modelo_reciclaje.onnx")
-
+ruta_modelo = os.path.join(BASE_DIR, "modelo_reciclaje.onnx")
 sesion_ia = None
 
 def cargar_modelo():

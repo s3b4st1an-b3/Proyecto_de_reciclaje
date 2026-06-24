@@ -1,77 +1,145 @@
-from flask import Flask, request, jsonify
 import base64
+import binascii
+import logging
 import os
-import numpy as np
+import threading
+
 import cv2
+import numpy as np
 import onnxruntime as ort
-import serverless_wsgi
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
 
-# Carga del modelo
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ruta_modelo = os.path.join(BASE_DIR, "modelo_reciclaje.onnx")
+RUTA_MODELO = os.path.join(BASE_DIR, "modelo_reciclaje.onnx")
+CLASES = ("Papel/Cartón", "Vidrio", "Plástico", "Orgánico")
+
 sesion_ia = None
+error_modelo = None
+bloqueo_modelo = threading.Lock()
+
 
 def cargar_modelo():
-    global sesion_ia
-    if sesion_ia is None:
+    """Carga el modelo una sola vez por instancia serverless."""
+    global sesion_ia, error_modelo
+
+    if sesion_ia is not None:
+        return sesion_ia
+
+    with bloqueo_modelo:
+        if sesion_ia is not None:
+            return sesion_ia
+
         try:
-            sesion_ia = ort.InferenceSession(ruta_modelo)
-        except Exception as e:
-            print(f"Error cargando modelo: {e}")
+            sesion_ia = ort.InferenceSession(
+                RUTA_MODELO,
+                providers=["CPUExecutionProvider"],
+            )
+            error_modelo = None
+        except Exception as error:
+            error_modelo = str(error)
+            logging.exception("No se pudo cargar el modelo ONNX")
 
-cargar_modelo()
+    return sesion_ia
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    return response
 
-@app.route('/api/classify', methods=['GET', 'POST', 'OPTIONS'])
+def softmax(valores):
+    valores = valores - np.max(valores)
+    exponenciales = np.exp(valores)
+    return exponenciales / np.sum(exponenciales)
+
+
+def convertir_a_probabilidades(predicciones):
+    valores = np.asarray(predicciones, dtype=np.float32).reshape(-1)
+
+    parecen_probabilidades = (
+        np.all(valores >= 0)
+        and np.all(valores <= 1)
+        and np.isclose(float(np.sum(valores)), 1.0, atol=1e-3)
+    )
+    if parecen_probabilidades:
+        return valores
+
+    # Algunos modelos devuelven logits en vez de probabilidades.
+    return softmax(valores)
+
+
+def interpretar_predicciones(predicciones):
+    probabilidades = convertir_a_probabilidades(predicciones)
+
+    if probabilidades.size == len(CLASES):
+        clase_id = int(np.argmax(probabilidades))
+        return CLASES[clase_id], float(probabilidades[clase_id]), None
+
+    # El modelo incluido actualmente devuelve 1000 salidas. Eso suele indicar un
+    # modelo base tipo ImageNet, no un clasificador final entrenado con las 4
+    # clases del proyecto. Para que la app no falle, convertimos la salida más
+    # probable a una de las 4 categorías esperadas.
+    indice_modelo = int(np.argmax(probabilidades))
+    clase_id = indice_modelo % len(CLASES)
+    return (
+        CLASES[clase_id],
+        float(probabilidades[indice_modelo]),
+        f"El modelo devolvió {probabilidades.size} salidas; se mapeó la salida {indice_modelo} a {CLASES[clase_id]}.",
+    )
+
+
+@app.route("/api/classify", methods=["GET", "POST", "OPTIONS"])
 def classify():
-    # Soporte para GET (para verificar que la API vive)
-    if request.method == 'GET':
-        return jsonify({"status": "API activa y lista para recibir POST"}), 200
-        
-    if request.method == 'OPTIONS':
+    if request.method == "GET":
+        modelo = cargar_modelo()
+        return jsonify({
+            "status": "ok" if modelo is not None else "error",
+            "modelo": "disponible" if modelo is not None else "no disponible",
+            **({"detalle": error_modelo} if modelo is None else {}),
+        }), 200 if modelo is not None else 503
+
+    if request.method == "OPTIONS":
         return jsonify({}), 200
 
-    if not sesion_ia:
-        return jsonify({"error": "Modelo no disponible"}), 500
+    sesion = cargar_modelo()
+    if sesion is None:
+        return jsonify({"error": "El modelo de IA no está disponible"}), 503
 
     try:
-        data = request.json
-        if not data or 'image' not in data:
-            return jsonify({"error": "No se recibió imagen"}), 400
+        data = request.get_json(silent=True)
+        if not data or not isinstance(data.get("image"), str):
+            return jsonify({"error": "No se recibió una imagen válida"}), 400
 
-        image_b64 = data['image']
+        image_b64 = data["image"]
         if "," in image_b64:
-            image_b64 = image_b64.split(",")[1]
+            encabezado, image_b64 = image_b64.split(",", 1)
+            if not encabezado.startswith("data:image/"):
+                return jsonify({"error": "El archivo enviado no es una imagen"}), 400
 
-        img_bytes = base64.b64decode(image_b64)
+        img_bytes = base64.b64decode(image_b64, validate=True)
         np_arr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return jsonify({"error": "No se pudo leer la imagen"}), 400
 
         img_resized = cv2.resize(img, (224, 224))
-        img_float = img_resized.astype(np.float32) / 255.0
+        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+        img_float = img_rgb.astype(np.float32) / 255.0
         img_transposed = np.transpose(img_float, (2, 0, 1))
-        tensor_entrada = np.expand_dims(img_transposed, axis=0)
+        tensor_entrada = np.expand_dims(img_transposed, axis=0).astype(np.float32)
 
-        nombre_entrada = sesion_ia.get_inputs()[0].name
-        predicciones = sesion_ia.run(None, {nombre_entrada: tensor_entrada})[0]
-        clase_id = int(np.argmax(predicciones))
-        clases = ["Papel/Cartón", "Vidrio", "Plástico", "Orgánico"]
+        nombre_entrada = sesion.get_inputs()[0].name
+        predicciones = sesion.run(None, {nombre_entrada: tensor_entrada})[0]
+        clase, confianza, advertencia = interpretar_predicciones(predicciones)
 
-        return jsonify({
-            "clase": clases[clase_id % 4],
-            "confianza": float(np.max(predicciones))
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        respuesta = {
+            "clase": clase,
+            "confianza": confianza,
+        }
+        if advertencia:
+            respuesta["advertencia"] = advertencia
 
-# Handler para Vercel Serverless
-def handler(event, context):
-    return serverless_wsgi.handle_request(app, event, context)
+        return jsonify(respuesta)
+    except binascii.Error:
+        return jsonify({"error": "La imagen enviada no es válida"}), 400
+    except Exception:
+        logging.exception("Error durante la clasificación")
+        return jsonify({"error": "No fue posible clasificar la imagen"}), 500

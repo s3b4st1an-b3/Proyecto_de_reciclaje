@@ -36,7 +36,8 @@
             <div class="card camera-card">
                 <div class="card-label">Visión en tiempo real</div>
                 <div class="video-container">
-                    <video id="webcam" autoplay playsinline muted></video>
+                    <video id="webcam" autoplay playsinline muted aria-label="Vista de la cámara"></video>
+                    <img id="image-preview" alt="Imagen seleccionada para analizar">
                     <canvas id="canvas" style="display:none;"></canvas>
                     <div id="camera-placeholder" class="placeholder">
                         <div class="placeholder-icon">
@@ -55,9 +56,14 @@
                     <div class="corner br"></div>
                 </div>
                 <div class="controls">
-                    <button id="btn-start" class="btn btn-primary">Encender cámara</button>
-                    <button id="btn-stop" class="btn btn-stop" disabled>Apagar</button>
-                    <button id="btn-capture" class="btn btn-accent" disabled>Escanear</button>
+                    <button id="btn-start" class="btn btn-primary" type="button">Encender cámara</button>
+                    <button id="btn-stop" class="btn btn-stop" type="button" disabled>Apagar</button>
+                    <button id="btn-capture" class="btn btn-accent" type="button" disabled>Escanear</button>
+                </div>
+                <div class="upload-control">
+                    <input id="image-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment">
+                    <button id="btn-upload" class="btn btn-secondary" type="button">Seleccionar imagen</button>
+                    <span>También puedes tomar o subir una foto.</span>
                 </div>
             </div>
 
@@ -66,7 +72,7 @@
 
                 <div class="result-group">
                     <span class="result-label">Material detectado</span>
-                    <div id="output-class" class="result-value result-primary">Esperando escaneo...</div>
+                    <div id="output-class" class="result-value result-primary" aria-live="polite">Esperando escaneo...</div>
                 </div>
 
                 <div class="divider"></div>
@@ -83,7 +89,7 @@
                     <p>Consultando modelo de IA...</p>
                 </div>
 
-                <div class="result-footer">
+                <div class="result-footer" role="status" aria-live="polite">
                     <div class="status-dot" id="status-dot"></div>
                     <span id="status-text">Sistema en espera</span>
                 </div>

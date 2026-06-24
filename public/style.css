@@ -156,7 +156,14 @@ header {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    display: block;
+    display: none;
+}
+
+#image-preview {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: none;
 }
 
 /* Corner brackets — the signature element */
@@ -231,6 +238,34 @@ header {
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
+}
+
+.upload-control {
+    display: grid;
+    gap: 8px;
+}
+
+.upload-control input {
+    display: none;
+}
+
+.upload-control span {
+    color: var(--text-2);
+    font-size: 0.75rem;
+    text-align: center;
+}
+
+.btn-secondary {
+    width: 100%;
+    background: transparent;
+    color: var(--text-2);
+    border: 1px dashed #2A3D5C;
+}
+
+.btn-secondary:hover:not(:disabled) {
+    color: var(--text-1);
+    border-color: var(--teal);
+    background: var(--teal-dim);
 }
 
 .btn-stop {

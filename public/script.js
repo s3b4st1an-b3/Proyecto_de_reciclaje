@@ -14,18 +14,57 @@ const imageInput = document.getElementById("image-input");
 
 const outputClass = document.getElementById("output-class");
 const outputConfidence = document.getElementById("output-confidence");
+const confidenceTrack = document.getElementById("confidence-track");
+const confidenceBar = document.getElementById("confidence-bar");
+const resultDetails = document.getElementById("result-details");
+const outputSecondOption = document.getElementById("output-second-option");
+const outputRecommendation = document.getElementById("output-recommendation");
 const loading = document.getElementById("loading");
 
 let streamActivo = null;
 let analizando = false;
 
-function actualizarEstado(texto, activo = false) {
+function actualizarEstado(texto, activo = false, dudoso = false) {
     statusText.textContent = texto;
     statusDot.classList.toggle("active", activo);
+    statusDot.classList.toggle("uncertain", dudoso);
 }
 
 function mostrarPlaceholder(mostrar) {
     placeholder.style.display = mostrar ? "flex" : "none";
+}
+
+function reiniciarResultado() {
+    outputClass.textContent = "Esperando escaneo...";
+    outputConfidence.textContent = "--";
+    outputClass.classList.remove("is-reliable", "is-uncertain");
+    confidenceTrack.classList.remove("is-reliable", "is-uncertain");
+    confidenceTrack.setAttribute("aria-valuenow", "0");
+    confidenceBar.style.width = "0%";
+    resultDetails.hidden = true;
+    outputSecondOption.textContent = "--";
+    outputRecommendation.textContent = "--";
+}
+
+function mostrarResultado(resultado) {
+    const confianza = Math.max(0, Math.min(1, resultado.confianza));
+    const confianzaPorcentaje = confianza * 100;
+    const esConfiable = resultado.es_confiable === true;
+    const segundaOpcion = resultado.segunda_opcion;
+
+    outputClass.textContent = resultado.clase;
+    outputConfidence.textContent = `${confianzaPorcentaje.toFixed(2)}%`;
+    outputClass.classList.toggle("is-reliable", esConfiable);
+    outputClass.classList.toggle("is-uncertain", !esConfiable);
+    confidenceTrack.classList.toggle("is-reliable", esConfiable);
+    confidenceTrack.classList.toggle("is-uncertain", !esConfiable);
+    confidenceTrack.setAttribute("aria-valuenow", confianzaPorcentaje.toFixed(0));
+    confidenceBar.style.width = `${confianzaPorcentaje}%`;
+
+    outputSecondOption.textContent =
+        `${segundaOpcion.clase} · ${(segundaOpcion.confianza * 100).toFixed(2)}%`;
+    outputRecommendation.textContent = resultado.recomendacion;
+    resultDetails.hidden = false;
 }
 
 function mensajeErrorCamara(error) {
@@ -78,8 +117,7 @@ function detenerCamara({ limpiarResultado = true } = {}) {
     actualizarEstado("Sistema en espera");
 
     if (limpiarResultado) {
-        outputClass.textContent = "Esperando escaneo...";
-        outputConfidence.textContent = "--";
+        reiniciarResultado();
     }
 }
 
@@ -119,8 +157,8 @@ async function analizarImagen(fotoBase64) {
 
     analizando = true;
     loading.style.display = "flex";
+    reiniciarResultado();
     outputClass.textContent = "Analizando...";
-    outputConfidence.textContent = "--";
     btnCapture.disabled = true;
     btnUpload.disabled = true;
     actualizarEstado("Analizando...", true);
@@ -147,14 +185,23 @@ async function analizarImagen(fotoBase64) {
         if (!respuesta.ok) {
             throw new Error(resultado.error || `Error del servidor (${respuesta.status}).`);
         }
-        if (typeof resultado.clase !== "string" || !Number.isFinite(resultado.confianza)) {
+        if (
+            typeof resultado.clase !== "string"
+            || !Number.isFinite(resultado.confianza)
+            || typeof resultado.es_confiable !== "boolean"
+            || typeof resultado.recomendacion !== "string"
+            || typeof resultado.segunda_opcion?.clase !== "string"
+            || !Number.isFinite(resultado.segunda_opcion?.confianza)
+        ) {
             throw new Error("La respuesta del modelo no tiene el formato esperado.");
         }
 
-        const confianza = Math.max(0, Math.min(1, resultado.confianza));
-        outputClass.textContent = resultado.clase;
-        outputConfidence.textContent = `${(confianza * 100).toFixed(2)}%`;
-        actualizarEstado("Análisis completo", true);
+        mostrarResultado(resultado);
+        actualizarEstado(
+            resultado.es_confiable ? "Análisis confiable" : "Resultado dudoso",
+            resultado.es_confiable,
+            !resultado.es_confiable,
+        );
     } catch (error) {
         console.error("Error en la clasificación:", error);
         let mensaje = error.message;
@@ -165,8 +212,8 @@ async function analizarImagen(fotoBase64) {
             mensaje = "No hay conexión con la API. Ejecuta “python run_local.py” y abre http://localhost:3000.";
         }
 
+        reiniciarResultado();
         outputClass.textContent = "No se pudo analizar";
-        outputConfidence.textContent = "--";
         actualizarEstado("API no disponible");
         window.alert(mensaje);
     } finally {

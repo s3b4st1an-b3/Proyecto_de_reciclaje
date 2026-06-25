@@ -57,3 +57,8 @@ probar la cámara.
 - `api/index.py`: API Flask compatible con Vercel.
 - `api/modelo_reciclaje.onnx*`: modelo y pesos externos ONNX.
 - `run_local.py`: servidor local para frontend y API.
+
+## Pruebas
+
+La suite automatizada y las comprobaciones de despliegue están documentadas en
+[`tests/README.md`](tests/README.md).

@@ -2,4 +2,14 @@ __pycache__/
 *.pyc
 .env
 .venv/
+.pytest_cache/
 .DS_Store
+
+# Imágenes del dataset: se conserva la estructura, no los archivos pesados.
+dataset/**
+!dataset/README.md
+!dataset/**/
+!dataset/**/.gitkeep
+
+# Pesos, métricas e imágenes generadas durante el entrenamiento.
+training/artifacts/

@@ -1,5 +1,6 @@
 import base64
 import binascii
+import json
 import logging
 import os
 import threading
@@ -8,39 +9,226 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from flask import Flask, jsonify, request
+from PIL import Image
+from werkzeug.exceptions import RequestEntityTooLarge
+
+from api.categories import (
+    CLASE_NO_IDENTIFICADA,
+    CLASES,
+    IDENTIFICADORES_CLASE,
+    UMBRAL_CONFIANZA,
+    obtener_recomendacion,
+)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RUTA_MODELO = os.path.join(BASE_DIR, "modelo_reciclaje.onnx")
-CLASES = ("Papel/Cartón", "Vidrio", "Plástico", "Orgánico")
+PREPROCESAMIENTO_ESPERADO = "resize_shorter_side_center_crop"
+LAYOUT_ESPERADO = "NCHW"
+ESPACIO_COLOR_ESPERADO = "RGB"
 
 sesion_ia = None
 error_modelo = None
+detalle_modelo = None
+preprocesamiento_modelo = None
+umbral_modelo = UMBRAL_CONFIANZA
+modelo_revisado = False
 bloqueo_modelo = threading.Lock()
 
 
-def cargar_modelo():
-    """Carga el modelo una sola vez por instancia serverless."""
-    global sesion_ia, error_modelo
+@app.errorhandler(413)
+def imagen_demasiado_grande(_error):
+    return jsonify({
+        "error": "La imagen enviada supera el límite permitido de 4 MB"
+    }), 413
 
-    if sesion_ia is not None:
+
+def leer_metadatos_modelo(sesion):
+    metadatos = sesion.get_modelmeta().custom_metadata_map
+    requeridos = {
+        "classes",
+        "display_names",
+        "image_size",
+        "resize_size",
+        "preprocessing",
+        "input_layout",
+        "color_space",
+        "normalization_mean",
+        "normalization_std",
+        "output",
+    }
+    faltantes = sorted(requeridos - metadatos.keys())
+    if faltantes:
+        raise ValueError(
+            "El modelo no declara los metadatos requeridos: "
+            f"{', '.join(faltantes)}."
+        )
+
+    try:
+        clases_modelo = json.loads(metadatos["classes"])
+        nombres_visibles = json.loads(metadatos["display_names"])
+        medias = [float(valor) for valor in json.loads(
+            metadatos["normalization_mean"]
+        )]
+        desviaciones = [float(valor) for valor in json.loads(
+            metadatos["normalization_std"]
+        )]
+        image_size = int(metadatos["image_size"])
+        resize_size = int(metadatos["resize_size"])
+        confidence_threshold = float(
+            metadatos.get("confidence_threshold", UMBRAL_CONFIANZA)
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "Los metadatos de preprocesamiento del modelo no son válidos."
+        ) from error
+
+    if nombres_visibles != list(CLASES):
+        raise ValueError(
+            "El orden de categorías del modelo no coincide con la aplicación."
+        )
+    if clases_modelo != list(IDENTIFICADORES_CLASE):
+        raise ValueError(
+            "El orden de identificadores de clase no coincide con la aplicación."
+        )
+    if len(medias) != 3 or len(desviaciones) != 3:
+        raise ValueError(
+            "La normalización debe declarar tres medias y tres desviaciones."
+        )
+    if any(desviacion <= 0 for desviacion in desviaciones):
+        raise ValueError("Las desviaciones de normalización deben ser positivas.")
+    if image_size <= 0 or resize_size <= image_size:
+        raise ValueError(
+            "Los tamaños de preprocesamiento del modelo no son válidos."
+        )
+    if metadatos["preprocessing"] != PREPROCESAMIENTO_ESPERADO:
+        raise ValueError("El método de preprocesamiento no es compatible.")
+    if metadatos["input_layout"] != LAYOUT_ESPERADO:
+        raise ValueError("El modelo debe utilizar una entrada NCHW.")
+    if metadatos["color_space"] != ESPACIO_COLOR_ESPERADO:
+        raise ValueError("El modelo debe utilizar imágenes RGB.")
+    if metadatos["output"] != "logits":
+        raise ValueError("El modelo debe devolver logits.")
+    if not 0 < confidence_threshold < 1:
+        raise ValueError("El umbral de confianza del modelo no es válido.")
+
+    return {
+        "identificadores_clase": clases_modelo,
+        "categorias": nombres_visibles,
+        "image_size": image_size,
+        "resize_size": resize_size,
+        "preprocessing": metadatos["preprocessing"],
+        "input_layout": metadatos["input_layout"],
+        "color_space": metadatos["color_space"],
+        "normalization_mean": medias,
+        "normalization_std": desviaciones,
+        "output": metadatos["output"],
+        "confidence_threshold": confidence_threshold,
+    }
+
+
+def obtener_detalle_modelo(sesion):
+    entradas = sesion.get_inputs()
+    salidas = sesion.get_outputs()
+
+    if len(entradas) != 1:
+        raise ValueError(
+            f"El modelo debe tener una entrada, pero tiene {len(entradas)}."
+        )
+
+    if len(salidas) != 1:
+        raise ValueError(
+            f"El modelo debe tener una salida, pero tiene {len(salidas)}."
+        )
+
+    entrada = entradas[0]
+    salida = salidas[0]
+    forma_entrada = entrada.shape
+    forma_salida = salida.shape
+    cantidad_salidas = forma_salida[-1] if forma_salida else None
+
+    if entrada.type != "tensor(float)":
+        raise ValueError(
+            f"El modelo requiere una entrada {entrada.type}; se esperaba "
+            "tensor(float)."
+        )
+    if salida.type != "tensor(float)":
+        raise ValueError(
+            f"El modelo devuelve {salida.type}; se esperaba tensor(float)."
+        )
+
+    if not isinstance(cantidad_salidas, int):
+        raise ValueError(
+            "No fue posible determinar la cantidad de categorías del modelo."
+        )
+
+    if cantidad_salidas != len(CLASES):
+        raise ValueError(
+            f"El modelo devuelve {cantidad_salidas} categorías, pero la "
+            f"aplicación requiere exactamente {len(CLASES)}."
+        )
+
+    configuracion = leer_metadatos_modelo(sesion)
+    forma_esperada = [
+        3,
+        configuracion["image_size"],
+        configuracion["image_size"],
+    ]
+    if len(forma_entrada) != 4 or forma_entrada[1:] != forma_esperada:
+        raise ValueError(
+            f"El modelo declara una entrada {forma_entrada}; se esperaba "
+            f"[batch, {', '.join(map(str, forma_esperada))}]."
+        )
+
+    return {
+        "entrada": {
+            "nombre": entrada.name,
+            "forma": entrada.shape,
+            "tipo": entrada.type,
+        },
+        "salida": {
+            "nombre": salida.name,
+            "forma": salida.shape,
+            "tipo": salida.type,
+        },
+        "categorias": list(CLASES),
+        "preprocesamiento": configuracion,
+    }
+
+
+def cargar_modelo():
+    """Carga y valida el modelo una sola vez por instancia serverless."""
+    global sesion_ia, error_modelo, detalle_modelo
+    global preprocesamiento_modelo, umbral_modelo, modelo_revisado
+
+    if modelo_revisado:
         return sesion_ia
 
     with bloqueo_modelo:
-        if sesion_ia is not None:
+        if modelo_revisado:
             return sesion_ia
 
         try:
-            sesion_ia = ort.InferenceSession(
+            sesion = ort.InferenceSession(
                 RUTA_MODELO,
                 providers=["CPUExecutionProvider"],
             )
+            detalle_modelo = obtener_detalle_modelo(sesion)
+            preprocesamiento_modelo = detalle_modelo["preprocesamiento"]
+            umbral_modelo = preprocesamiento_modelo["confidence_threshold"]
+            sesion_ia = sesion
             error_modelo = None
         except Exception as error:
+            sesion_ia = None
+            detalle_modelo = None
+            preprocesamiento_modelo = None
+            umbral_modelo = UMBRAL_CONFIANZA
             error_modelo = str(error)
             logging.exception("No se pudo cargar el modelo ONNX")
+        finally:
+            modelo_revisado = True
 
     return sesion_ia
 
@@ -69,39 +257,117 @@ def convertir_a_probabilidades(predicciones):
 def interpretar_predicciones(predicciones):
     probabilidades = convertir_a_probabilidades(predicciones)
 
-    if probabilidades.size == len(CLASES):
-        clase_id = int(np.argmax(probabilidades))
-        return CLASES[clase_id], float(probabilidades[clase_id]), None
+    if probabilidades.size != len(CLASES):
+        raise ValueError(
+            f"El modelo devolvió {probabilidades.size} categorías durante la "
+            f"predicción; se esperaban {len(CLASES)}."
+        )
 
-    # El modelo incluido actualmente devuelve 1000 salidas. Eso suele indicar un
-    # modelo base tipo ImageNet, no un clasificador final entrenado con las 4
-    # clases del proyecto. Para que la app no falle, convertimos la salida más
-    # probable a una de las 4 categorías esperadas.
-    indice_modelo = int(np.argmax(probabilidades))
-    clase_id = indice_modelo % len(CLASES)
-    return (
-        CLASES[clase_id],
-        float(probabilidades[indice_modelo]),
-        f"El modelo devolvió {probabilidades.size} salidas; se mapeó la salida {indice_modelo} a {CLASES[clase_id]}.",
+    indices_ordenados = np.argsort(probabilidades)[::-1]
+    clase_id = int(indices_ordenados[0])
+    segunda_clase_id = int(indices_ordenados[1])
+    confianza = float(probabilidades[clase_id])
+    es_confiable = confianza + 1e-7 >= umbral_modelo
+    clase = CLASES[clase_id] if es_confiable else CLASE_NO_IDENTIFICADA
+
+    return {
+        "clase": clase,
+        "confianza": confianza,
+        "es_confiable": es_confiable,
+        "probabilidades": {
+            nombre_clase: float(probabilidades[indice])
+            for indice, nombre_clase in enumerate(CLASES)
+        },
+        "segunda_opcion": {
+            "clase": CLASES[segunda_clase_id],
+            "confianza": float(probabilidades[segunda_clase_id]),
+        },
+        "recomendacion": obtener_recomendacion(clase),
+    }
+
+
+def redimensionar_lado_corto(imagen, lado_corto):
+    alto, ancho = imagen.shape[:2]
+    if alto <= 0 or ancho <= 0:
+        raise ValueError("La imagen no tiene dimensiones válidas.")
+
+    if ancho <= alto:
+        nuevo_ancho = lado_corto
+        nuevo_alto = int(lado_corto * alto / ancho)
+    else:
+        nuevo_alto = lado_corto
+        nuevo_ancho = int(lado_corto * ancho / alto)
+    imagen_pil = Image.fromarray(imagen)
+    return np.asarray(
+        imagen_pil.resize(
+            (nuevo_ancho, nuevo_alto),
+            resample=Image.Resampling.BILINEAR,
+        )
     )
+
+
+def recortar_centro(imagen, tamano):
+    alto, ancho = imagen.shape[:2]
+    if alto < tamano or ancho < tamano:
+        raise ValueError("La imagen redimensionada es menor que el recorte.")
+
+    inicio_y = int(round((alto - tamano) / 2.0))
+    inicio_x = int(round((ancho - tamano) / 2.0))
+    return imagen[
+        inicio_y:inicio_y + tamano,
+        inicio_x:inicio_x + tamano,
+    ]
+
+
+def preparar_tensor(imagen, configuracion):
+    imagen_rgb = cv2.cvtColor(imagen, cv2.COLOR_BGR2RGB)
+    imagen_redimensionada = redimensionar_lado_corto(
+        imagen_rgb,
+        configuracion["resize_size"],
+    )
+    imagen_recortada = recortar_centro(
+        imagen_redimensionada,
+        configuracion["image_size"],
+    )
+    imagen_float = imagen_recortada.astype(np.float32) / 255.0
+    medias = np.asarray(
+        configuracion["normalization_mean"],
+        dtype=np.float32,
+    ).reshape(1, 1, 3)
+    desviaciones = np.asarray(
+        configuracion["normalization_std"],
+        dtype=np.float32,
+    ).reshape(1, 1, 3)
+    imagen_normalizada = (imagen_float - medias) / desviaciones
+    imagen_transpuesta = np.transpose(imagen_normalizada, (2, 0, 1))
+    return np.expand_dims(imagen_transpuesta, axis=0).astype(np.float32)
 
 
 @app.route("/api/classify", methods=["GET", "POST", "OPTIONS"])
 def classify():
     if request.method == "GET":
         modelo = cargar_modelo()
-        return jsonify({
+        respuesta = {
             "status": "ok" if modelo is not None else "error",
-            "modelo": "disponible" if modelo is not None else "no disponible",
+            "modelo": "compatible" if modelo is not None else "incompatible",
+            "categorias_esperadas": list(CLASES),
+            "umbral_confianza": umbral_modelo,
             **({"detalle": error_modelo} if modelo is None else {}),
-        }), 200 if modelo is not None else 503
+            **({"configuracion": detalle_modelo} if modelo is not None else {}),
+        }
+        return jsonify(respuesta), 200 if modelo is not None else 503
 
     if request.method == "OPTIONS":
         return jsonify({}), 200
 
     sesion = cargar_modelo()
     if sesion is None:
-        return jsonify({"error": "El modelo de IA no está disponible"}), 503
+        return jsonify({
+            "error": "El modelo de IA no es compatible con esta aplicación",
+            "detalle": error_modelo,
+            "categorias_esperadas": list(CLASES),
+            "umbral_confianza": umbral_modelo,
+        }), 503
 
     try:
         data = request.get_json(silent=True)
@@ -120,26 +386,17 @@ def classify():
         if img is None:
             return jsonify({"error": "No se pudo leer la imagen"}), 400
 
-        img_resized = cv2.resize(img, (224, 224))
-        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-        img_float = img_rgb.astype(np.float32) / 255.0
-        img_transposed = np.transpose(img_float, (2, 0, 1))
-        tensor_entrada = np.expand_dims(img_transposed, axis=0).astype(np.float32)
+        tensor_entrada = preparar_tensor(img, preprocesamiento_modelo)
 
         nombre_entrada = sesion.get_inputs()[0].name
         predicciones = sesion.run(None, {nombre_entrada: tensor_entrada})[0]
-        clase, confianza, advertencia = interpretar_predicciones(predicciones)
+        resultado = interpretar_predicciones(predicciones)
 
-        respuesta = {
-            "clase": clase,
-            "confianza": confianza,
-        }
-        if advertencia:
-            respuesta["advertencia"] = advertencia
-
-        return jsonify(respuesta)
+        return jsonify(resultado)
     except binascii.Error:
         return jsonify({"error": "La imagen enviada no es válida"}), 400
+    except RequestEntityTooLarge:
+        raise
     except Exception:
         logging.exception("Error durante la clasificación")
         return jsonify({"error": "No fue posible clasificar la imagen"}), 500

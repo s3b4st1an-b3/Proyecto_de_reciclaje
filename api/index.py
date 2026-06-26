@@ -20,11 +20,19 @@ from api.categories import (
     obtener_recomendacion,
 )
 
-app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+app = Flask(
+    __name__,
+    static_folder=os.path.join(BASE_DIR, "public"),
+    static_url_path=""
+)
+
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RUTA_MODELO = os.path.join(BASE_DIR, "modelo_reciclaje.onnx")
+
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+RUTA_MODELO = os.path.join(API_DIR, "modelo_reciclaje.onnx")
 PREPROCESAMIENTO_ESPERADO = "resize_shorter_side_center_crop"
 LAYOUT_ESPERADO = "NCHW"
 ESPACIO_COLOR_ESPERADO = "RGB"
@@ -342,6 +350,12 @@ def preparar_tensor(imagen, configuracion):
     imagen_transpuesta = np.transpose(imagen_normalizada, (2, 0, 1))
     return np.expand_dims(imagen_transpuesta, axis=0).astype(np.float32)
 
+from flask import send_from_directory
+
+
+@app.route("/")
+def home():
+    return send_from_directory(app.static_folder, "index.html")
 
 @app.route("/api/classify", methods=["GET", "POST", "OPTIONS"])
 def classify():

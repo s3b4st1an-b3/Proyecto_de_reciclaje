@@ -1,38 +1,13 @@
-"""
-Punto de entrada principal de la aplicación.
-
-- Expone la API Flask definida en api.index.
-- Sirve la interfaz web ubicada en /public.
-- Es compatible con Gunicorn (Render) y ejecución local.
-"""
-
 import os
-from flask import send_from_directory
 
-from api.index import app
+print("=" * 60)
+print("BASE_DIR:", BASE_DIR)
+print("PUBLIC_DIR:", PUBLIC_DIR)
+print("Contenido de BASE_DIR:", os.listdir(BASE_DIR))
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PUBLIC_DIR = os.path.join(BASE_DIR, "public")
+if os.path.exists(PUBLIC_DIR):
+    print("Contenido de PUBLIC:", os.listdir(PUBLIC_DIR))
+else:
+    print("La carpeta PUBLIC NO existe")
 
-
-@app.route("/")
-def serve_index():
-    return send_from_directory(PUBLIC_DIR, "index.html")
-
-
-@app.route("/<path:path>")
-def serve_static(path):
-    return send_from_directory(PUBLIC_DIR, path)
-
-
-if __name__ == "__main__":
-    print("\n" + "=" * 50)
-    print("SERVIDOR LOCAL ACTIVO")
-    print("Ingresa a: http://localhost:3000")
-    print("=" * 50 + "\n")
-
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 3000)),
-        debug=True,
-    )
+print("=" * 60)

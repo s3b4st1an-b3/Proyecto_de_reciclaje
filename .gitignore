@@ -13,3 +13,13 @@ dataset/**
 
 # Pesos, métricas e imágenes generadas durante el entrenamiento.
 training/artifacts/
+
+.vscode/
+.idea/
+
+*.log
+
+.coverage
+htmlcov/
+
+Thumbs.db

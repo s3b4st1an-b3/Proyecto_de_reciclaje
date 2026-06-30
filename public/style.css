@@ -106,6 +106,44 @@ header {
     border-color: var(--navy-border);
 }
 
+.repo-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 28px;
+    padding: 5px 12px;
+    border: 1px solid rgba(0,212,170,0.28);
+    border-radius: 100px;
+    background: rgba(0, 212, 170, 0.08);
+    color: var(--teal);
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-decoration: none;
+    transition:
+        background var(--transition),
+        border-color var(--transition),
+        color var(--transition),
+        transform var(--transition);
+}
+
+.repo-link:hover,
+.repo-link:focus-visible {
+    background: var(--teal);
+    border-color: var(--teal);
+    color: var(--navy);
+    outline: none;
+}
+
+.repo-link:active {
+    transform: scale(0.97);
+}
+
+.repo-link svg {
+    flex-shrink: 0;
+}
+
 /* ─── Layout ─────────────────────────────────────────── */
 .main-content {
     display: grid;

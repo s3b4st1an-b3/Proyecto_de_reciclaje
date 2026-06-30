@@ -80,6 +80,29 @@
                 <div class="result-group">
                     <span class="result-label">Fiabilidad del análisis</span>
                     <div id="output-confidence" class="result-value result-secondary">--</div>
+                    <div
+                        id="confidence-track"
+                        class="confidence-track"
+                        role="progressbar"
+                        aria-label="Confianza del análisis"
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                        aria-valuenow="0"
+                    >
+                        <div id="confidence-bar" class="confidence-bar"></div>
+                    </div>
+                </div>
+
+                <div id="result-details" class="result-details" hidden>
+                    <div class="result-detail">
+                        <span class="result-label">Segunda opción</span>
+                        <p id="output-second-option">--</p>
+                    </div>
+
+                    <div class="result-detail recommendation">
+                        <span class="result-label">Recomendación</span>
+                        <p id="output-recommendation">--</p>
+                    </div>
                 </div>
 
                 <div id="loading" class="loading" style="display: none;">

@@ -1,4 +1,6 @@
-"""Punto de entrada que Vercel detecta para desplegar Flask."""
+"""
+Punto de entrada para Gunicorn y Render.
+"""
 
 from api.index import app
 
